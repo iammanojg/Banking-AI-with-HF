@@ -1,31 +1,34 @@
-# Final app.py — customer-level model + HuggingFace LLM integration (uses llm_local.safe_generate_tip)
-# IMPORTANT: load_dotenv() is called before importing the helper so HF_TOKEN from .env is read.
-import os
-from dotenv import load_dotenv
-
-# Load local .env (for local development). Do NOT commit .env to git.
-load_dotenv()
+# app.py — FINAL VERSION (works locally + Streamlit Community Cloud)
 
 import streamlit as st
+import os
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from catboost import CatBoostClassifier
 
-# Import the HF helper (will read HF_TOKEN via os.getenv inside the helper)
-from llm_local import safe_generate_tip
+# ==================== 1. HUGGING FACE TOKEN SETUP ====================
+# Priority 1: Streamlit Cloud → .streamlit/secrets.toml
+# Priority 2: Local dev → .env file
+if hasattr(st, "secrets"):
+    try:
+        os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
+        os.environ["HUGGINGFACEHUB_API_TOKEN"] = st.secrets["HF_TOKEN"]
+        # st.success("HF token loaded from secrets.toml")
+    except KeyError:
+        pass  # will fall back to .env
 
-import streamlit as st
-import os
+# Load .env only for local testing (harmless on Streamlit Cloud)
+from dotenv import load_dotenv
+load_dotenv()
 
-# This reads from secrets.toml automatically on Streamlit Cloud
-hf_token = st.secrets["HF_TOKEN"]
-model_name = st.secrets["HF_MODEL"]
+# Final check – if still no token → stop with clear instructions
+if not os.environ.get("HF_TOKEN") or not os.environ["HF_TOKEN"].startswith("hf_"):
+    st.error("""
+    ⚠️ HF_TOKEN is missing!
 
-# Now set it as environment variable so huggingface_hub picks it up
-os.environ["HF_TOKEN"] = hf_token
-# or os.environ["HUGGINGFACEHUB_API_TOKEN"] = hf_token  # some libraries use this name
+    **On Streamlit Cloud** → create the file exactly like this in your repo root:
 
 # ---------- Page config ----------
 st.set_page_config(page_title="Smart Spending Advisor (Customer-level)", page_icon="💳", layout="centered")
