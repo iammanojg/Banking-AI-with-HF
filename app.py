@@ -1,4 +1,3 @@
-# Updated app.py — fixes prediction label normalization and suggestion lookup
 import os
 import streamlit as st
 import pandas as pd
@@ -7,64 +6,71 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score
 from catboost import CatBoostClassifier
 
-# ---------- Page config ----------
-st.set_page_config(page_title="Smart Spending Advisor", page_icon="💳", layout="centered")
+# ---------- Config ----------
+st.set_page_config(page_title="Smart Spending Advisor (Customer-level)", page_icon="💳", layout="centered")
+st.title("💳 Smart Spending Advisor — Customer-targeted Recommendations")
+st.write("App trains on aggregated customer behavior (one row per customer) so recommendations are targeted per Customer ID.")
 
-st.title("💳 Smart Spending Advisor")
-st.write("Enter a customer ID to see an analytical summary and an AI-driven recommendation.")
-
-# ---------- Paths ----------
 DATA_PATH = os.path.join("data", "spending_patterns_REALISTIC_97percent.csv")
 
-# ---------- Suggestions mapping (user-supplied + slightly friendlier) ----------
 SUGGESTIONS = {
-    'Cash': "Tip: Consider using a Credit Card for larger purchases to earn rewards and build credit. Cards also offer purchase protection and easier dispute resolution.",
+    'Cash': "Tip: Consider using a Credit Card for larger purchases to earn rewards and build credit. Cards also offer purchase protection.",
     'Debit Card': "Insight: Debit is practical for daily spending. A Credit Card can offer cashback, rewards, and better buyer protections when used responsibly.",
-    'Credit Card': "Excellent Choice! You're optimizing for rewards and protection. Consider paying in full each month to avoid interest charges.",
-    'Digital Wallet': "Smart move! For even more benefits, link your Digital Wallet to a rewards Credit Card so you earn points while keeping the convenience."
+    'Credit Card': "Excellent Choice! You're optimizing for rewards and protection. Continue paying in full each month.",
+    'Digital Wallet': "Smart move! Link your digital wallet to a rewards Credit Card to earn points while keeping convenience."
 }
 
-# ---------- Utility: load CSV ----------
+# ---------- Load CSV (auto-detect separator; support upload) ----------
 @st.cache_data(show_spinner=False)
 def load_csv(maybe_uploaded):
     if maybe_uploaded is not None:
-        df = pd.read_csv(maybe_uploaded)
+        df = pd.read_csv(maybe_uploaded, sep=None, engine='python')
         source = "uploaded file"
     elif os.path.exists(DATA_PATH):
-        df = pd.read_csv(DATA_PATH)
+        df = pd.read_csv(DATA_PATH, sep=None, engine='python')
         source = DATA_PATH
     else:
+        # tiny mock dataset if nothing provided
         df = pd.DataFrame({
-            "Customer ID": ["CUST_0159", "CUST_0245", "CUST_0312"],
-            "Transaction Date": pd.to_datetime(["2025-01-05", "2025-02-10", "2025-03-20"]),
-            "Location": ["app", "store", "web"],
-            "Category": ["Groceries", "Travel", "Fitness"],
-            "Item": ["Milk", "Flight", "Gym"],
-            "Quantity": [1, 1, 1],
-            "Total Spent": [45.5, 280.0, 130.0],
-            "Payment Method": ["Debit Card", "Credit Card", "Cash"]
+            "Customer ID": ["CUST_0159","CUST_0245","CUST_0312","CUST_0312"],
+            "Transaction Date": ["2025-01-05","2025-02-10","2025-03-20","2025-04-01"],
+            "Location": ["app","store","web","app"],
+            "Category": ["Groceries","Travel","Fitness","Groceries"],
+            "Item": ["Milk","Flight","Gym","Eggs"],
+            "Quantity": [1,1,1,12],
+            "Total Spent": [45.5,280.0,130.0,12.0],
+            "Payment Method": ["Debit Card","Credit Card","Cash","Cash"]
         })
         source = "mock data"
     return df, source
 
-# ---------- Feature engineering ----------
-def featurize(df):
+# ---------- Transaction-level feature engineering ----------
+def featurize_tx(df):
     df = df.copy()
+    # parse date: try dayfirst (your file uses dd-mm-yyyy)
     if 'Transaction Date' in df.columns:
-        df['Transaction Date'] = pd.to_datetime(df['Transaction Date'], errors='coerce')
+        df['Transaction Date'] = pd.to_datetime(df['Transaction Date'], dayfirst=True, errors='coerce')
         df['Year'] = df['Transaction Date'].dt.year.fillna(0).astype(int)
         df['Month'] = df['Transaction Date'].dt.month.fillna(0).astype(int)
         df['Day'] = df['Transaction Date'].dt.day.fillna(0).astype(int)
         df['Weekday'] = df['Transaction Date'].dt.weekday.fillna(0).astype(int)
         df['Is_Weekend'] = (df['Weekday'] >= 5).astype(int)
-        df['Is_Month_End'] = df['Day'].isin([28,29,30,31]).astype(int)
-        df.drop(columns=['Transaction Date'], inplace=True)
+    # numerics
     if 'Total Spent' in df.columns:
-        df['Total_Spent_Log'] = np.log1p(df['Total Spent'].fillna(0))
-        df['Is_High_Value'] = (df['Total Spent'].fillna(0) > 500).astype(int)
-        df['Is_Very_Cheap'] = (df['Total Spent'].fillna(0) < 10).astype(int)
+        df['Total_Spent'] = pd.to_numeric(df['Total Spent'], errors='coerce').fillna(0)
+        df['Total_Spent_Log'] = np.log1p(df['Total_Spent'])
+        df['Is_High_Value'] = (df['Total_Spent'] > 500).astype(int)
+        df['Is_Very_Cheap'] = (df['Total_Spent'] < 10).astype(int)
     if 'Quantity' in df.columns:
-        df['Price_Per_Unit'] = df['Total Spent'].fillna(0) / df['Quantity'].replace(0, 1).fillna(1)
+        df['Quantity'] = pd.to_numeric(df['Quantity'], errors='coerce').fillna(0)
+    # Price per unit: if present or compute
+    if 'Price Per Unit' in df.columns:
+        df['Price_Per_Unit'] = pd.to_numeric(df['Price Per Unit'], errors='coerce').fillna(np.nan)
+    if 'Price_Per_Unit' not in df.columns or df['Price_Per_Unit'].isna().all():
+        if 'Quantity' in df.columns and 'Total_Spent' in df.columns:
+            df['Price_Per_Unit'] = df['Total_Spent'] / df['Quantity'].replace(0,1)
+            df['Price_Per_Unit'] = df['Price_Per_Unit'].fillna(0)
+    # Channel mapping
     def get_channel(loc):
         loc = str(loc).lower()
         if any(x in loc for x in ['app','mobile','ios','android']): return 'Mobile App'
@@ -73,136 +79,197 @@ def featurize(df):
         return 'Other'
     if 'Location' in df.columns:
         df['Channel'] = df['Location'].apply(get_channel)
-        df.drop(columns=['Location'], inplace=True)
-    for c in ['Customer ID', 'Category', 'Item', 'Channel', 'Payment Method']:
+    # normalize column names used later
+    for c in ['Customer ID','Category','Item','Payment Method','Channel','Total_Spent','Price_Per_Unit','Quantity','Is_Weekend','Is_High_Value']:
         if c not in df.columns:
-            df[c] = "Unknown"
+            df[c] = np.nan if c in ['Total_Spent','Price_Per_Unit','Quantity','Is_Weekend','Is_High_Value'] else "Unknown"
     return df
 
-# ---------- Model training/caching with safe stratify logic ----------
+# ---------- Aggregate per-customer features ----------
+def build_customer_features(tx_df):
+    tx = featurize_tx(tx_df)
+    # groupby Customer ID
+    group = tx.groupby('Customer ID', dropna=False)
+    rows = []
+    for cust, sub in group:
+        # skip NaN customer ids
+        if pd.isna(cust) or str(cust).strip() == '':
+            continue
+        total_tx = len(sub)
+        total_spent = sub['Total_Spent'].sum()
+        avg_spent = sub['Total_Spent'].mean() if total_tx>0 else 0.0
+        max_spent = sub['Total_Spent'].max() if total_tx>0 else 0.0
+        med_spent = sub['Total_Spent'].median() if total_tx>0 else 0.0
+        pct_high = sub['Is_High_Value'].mean() if 'Is_High_Value' in sub else 0.0
+        pct_mobile = (sub['Channel']=='Mobile App').mean() if 'Channel' in sub else 0.0
+        pct_online = (sub['Channel']=='Online').mean() if 'Channel' in sub else 0.0
+        pct_instore = (sub['Channel']=='In-store').mean() if 'Channel' in sub else 0.0
+        unique_categories = sub['Category'].nunique()
+        top_category = sub['Category'].mode().iat[0] if sub['Category'].nunique()>0 else "Unknown"
+        # Payment method distribution and primary
+        pm_counts = sub['Payment Method'].value_counts()
+        primary_pm = pm_counts.idxmax() if len(pm_counts)>0 else "Unknown"
+        pm_entropy = -np.sum((pm_counts/pm_counts.sum()) * np.log1p(pm_counts/pm_counts.sum())) if len(pm_counts)>0 else 0.0
+        # Additional features: proportion of transactions that are cash/debit/credit/digital
+        pm_props = (sub['Payment Method'].value_counts(normalize=True)).to_dict()
+        rows.append({
+            "Customer ID": cust,
+            "total_tx": total_tx,
+            "total_spent": total_spent,
+            "avg_spent": avg_spent,
+            "max_spent": max_spent,
+            "med_spent": med_spent,
+            "pct_high": pct_high,
+            "pct_mobile": pct_mobile,
+            "pct_online": pct_online,
+            "pct_instore": pct_instore,
+            "unique_categories": unique_categories,
+            "top_category": top_category,
+            "primary_payment": primary_pm,
+            "pm_entropy": pm_entropy,
+            # payment proportions (may be missing keys; default 0)
+            "pct_cash": pm_props.get("Cash", 0.0),
+            "pct_debit": pm_props.get("Debit Card", 0.0),
+            "pct_credit": pm_props.get("Credit Card", 0.0),
+            "pct_wallet": pm_props.get("Digital Wallet", 0.0),
+        })
+    cust_df = pd.DataFrame(rows)
+    return cust_df
+
+# ---------- Train customer-level model ----------
 @st.cache_resource(show_spinner=False)
-def train_model(full_df, iterations=300, depth=6, random_seed=42):
-    df = featurize(full_df)
-    df = df.dropna(subset=['Payment Method']).reset_index(drop=True)
-    if len(df) < 2:
-        raise ValueError("Not enough labeled rows to train the model. Need at least 2 rows with 'Payment Method'.")
-    pm_counts = df['Payment Method'].value_counts()
-    stratify_used = True
+def train_customer_model(tx_df, iterations=300, depth=6, random_seed=42):
+    cust_df = build_customer_features(tx_df)
+    # need at least 2 customers with labels
+    if cust_df.shape[0] < 2:
+        raise ValueError("Need at least 2 unique customers in the dataset to train a customer-level model.")
+    # drop customers where primary_payment is NaN
+    cust_df = cust_df.dropna(subset=['primary_payment']).reset_index(drop=True)
+    # target and features
+    X = cust_df.drop(columns=['Customer ID','primary_payment'])
+    y = cust_df['primary_payment']
+    # If any class has less than 2 customers, avoid stratify
+    pm_counts = y.value_counts()
     if pm_counts.min() < 2 or pm_counts.shape[0] < 2:
         stratify = None
         stratify_used = False
     else:
-        stratify = df['Payment Method']
-    train_df, test_df = train_test_split(df, test_size=0.15, random_state=random_seed, stratify=stratify)
-    X_train = train_df.drop(columns=['Payment Method'])
-    y_train = train_df['Payment Method']
-    X_test = test_df.drop(columns=['Payment Method'])
-    y_test = test_df['Payment Method']
-    cat_features = [c for c in ['Customer ID', 'Category', 'Item', 'Channel'] if c in X_train.columns]
+        stratify = y
+        stratify_used = True
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=random_seed, stratify=stratify)
+    # identify categorical features for CatBoost
+    cat_features = [c for c in ['top_category'] if c in X.columns]
     model = CatBoostClassifier(iterations=iterations, depth=depth, learning_rate=0.05, random_seed=random_seed, verbose=False)
     model.fit(X_train, y_train, cat_features=cat_features)
     preds = model.predict(X_test)
     acc = accuracy_score(y_test, preds)
+    # return model and metadata
     return {
         "model": model,
         "cat_features": cat_features,
         "accuracy": acc,
-        "X_columns": X_train.columns.tolist(),
+        "X_columns": X.columns.tolist(),
         "stratify_used": stratify_used,
-        "payment_counts": pm_counts.to_dict()
+        "payment_counts": pm_counts.to_dict(),
+        "cust_df": cust_df  # include for UI use
     }
 
-# ---------- Sidebar: data upload / training options ----------
-st.sidebar.header("Data & Model")
-uploaded = st.sidebar.file_uploader("Upload dataset CSV (optional)", type=["csv"])
-df, source = load_csv(uploaded)
-st.sidebar.markdown(f"**Data source:** {source} — {len(df):,} rows")
+# ---------- Sidebar: data + model options ----------
+st.sidebar.header("Data & model")
+uploaded = st.sidebar.file_uploader("Upload dataset CSV (optional)", type=["csv","tsv","txt"])
+tx_df, source = load_csv(uploaded)
+st.sidebar.write("Data source:", source, "| rows:", len(tx_df))
 
-iterations = st.sidebar.number_input("CatBoost iterations", min_value=50, max_value=2000, value=300, step=50)
-depth = st.sidebar.slider("Tree depth", 3, 12, 6)
+st.sidebar.markdown("### Training options")
+iterations = st.sidebar.number_input("Iterations", min_value=50, max_value=2000, value=300, step=50)
+depth = st.sidebar.slider("Depth", 3, 12, 6)
 
-# Train (cached) with safe exception handling
+# show payment distribution
 try:
-    with st.spinner("Training model (cached) — this may take a moment..."):
-        model_bundle = train_model(df, iterations=int(iterations), depth=int(depth))
+    st.sidebar.write("Payment distribution:", tx_df['Payment Method'].value_counts().to_dict())
+except Exception:
+    st.sidebar.write("Payment distribution: N/A")
+
+# ---------- Train model ----------
+try:
+    with st.spinner("Training customer-level model (cached)..."):
+        bundle = train_customer_model(tx_df, iterations=int(iterations), depth=int(depth))
 except Exception as e:
     st.error(f"Model training failed: {e}")
     st.stop()
 
-model = model_bundle["model"]
-if not model_bundle.get("stratify_used", True):
-    st.sidebar.warning("Stratified split disabled because some payment-method classes have fewer than 2 samples. Model trained with a random split.")
-    st.sidebar.write("Payment method counts:", model_bundle.get("payment_counts", {}))
+model = bundle['model']
+cust_df = bundle['cust_df']
 
-# ---------- Helper: normalize prediction label ----------
-def normalize_pred_label(pred_raw):
-    """
-    Accepts model.predict output (array-like). Returns a clean string label.
-    Handles cases where model returns nested array/list.
-    """
-    if isinstance(pred_raw, (list, tuple, np.ndarray)):
-        val = pred_raw[0]
+# sidebar: customers list and selection
+unique_customers = sorted(cust_df['Customer ID'].astype(str).unique())
+st.sidebar.markdown("### Customers")
+st.sidebar.write(f"{len(unique_customers)} customers in dataset")
+cust_choice = st.sidebar.selectbox("Select Customer ID to analyze", [""] + unique_customers)
+
+# ---------- When customer selected ----------
+if cust_choice:
+    # customer-level row
+    row = cust_df[cust_df['Customer ID'].astype(str) == str(cust_choice)]
+    if row.empty:
+        st.error("Customer not found in aggregated customers (unexpected).")
     else:
-        val = pred_raw
-    # If val is list/array again, unwrap
-    if isinstance(val, (list, tuple, np.ndarray)):
-        val = val[0]
-    # final cast to str
-    return str(val)
-
-# ---------- Input & Analysis ----------
-cust_id = st.text_input("Enter Customer ID (e.g., CUST_0159):").strip()
-
-if st.button("🔍 Analyze Spending"):
-    df_full = featurize(df)
-    matches = df_full[df_full['Customer ID'].astype(str) == str(cust_id)]
-    if matches.empty:
-        st.error("Customer ID not found in the dataset. Try a different ID or upload a dataset with the desired customer.")
-    else:
-        user_row = matches.iloc[0]
-        st.subheader(f"Customer Summary: {cust_id}")
-        cols_to_show = [c for c in ['Category','Item','Total Spent','Quantity','Channel','Year','Month','Is_Weekend'] if c in user_row.index]
-        for c in cols_to_show:
-            st.write(f"**{c}:** {user_row[c]}")
-        Xcols = model_bundle['X_columns']
-        X_input = pd.DataFrame([user_row.reindex(Xcols)]).reset_index(drop=True)
-        raw_pred = model.predict(X_input)
-        pred_label = normalize_pred_label(raw_pred)
+        st.subheader(f"Customer-level summary — {cust_choice}")
+        row0 = row.iloc[0]
+        # show aggregate stats
+        st.write(f"Total transactions: {int(row0['total_tx'])}")
+        st.write(f"Total spent: €{row0['total_spent']:.2f}")
+        st.write(f"Avg transaction: €{row0['avg_spent']:.2f}")
+        st.write(f"Top category: {row0['top_category']}")
+        st.write(f"Primary payment (from data): {row0['primary_payment']} (this is the customer's historical dominant payment)")
+        # prepare model input (single row)
+        Xcols = bundle['X_columns']
+        X_input = row0.drop(labels=['Customer ID','primary_payment']).reindex(index=Xcols).to_frame().T.fillna(0)
+        # predict
+        pred_raw = model.predict(X_input)
+        pred_label = str(pred_raw[0])
         proba = model.predict_proba(X_input)[0]
-        confidence = float(np.max(proba))
-        st.success(f"🧠 Predicted Payment Method: **{pred_label}** (Confidence: {confidence*100:.2f}%)")
+        class_order = list(model.classes_)
+        # find predicted class prob
+        pred_index = class_order.index(pred_label) if pred_label in class_order else None
+        confidence = float(proba[pred_index]) if pred_index is not None else float(np.max(proba))
+        st.success(f"🧠 Model prediction for this customer: **{pred_label}** (Confidence: {confidence*100:.2f}%)")
+        # Analytical bullets
         analysis_msgs = []
-        if 'Total Spent' in user_row.index:
-            spent = float(user_row['Total Spent'])
-            if spent > 500:
-                analysis_msgs.append("High-value purchase — likely to benefit from card protections and rewards.")
-            elif spent < 10:
-                analysis_msgs.append("Small purchases — convenient methods like cash or digital wallets are common here.")
-        if 'Channel' in user_row.index:
-            ch = str(user_row['Channel'])
-            if ch == 'Mobile App':
-                analysis_msgs.append("This customer shops via Mobile App frequently — digital payment methods preferred.")
-            elif ch == 'In-store':
-                analysis_msgs.append("In-store purchases often correlate with cash or debit usage.")
+        if row0['total_spent'] > 1000:
+            analysis_msgs.append("High cumulative spend — rewards and protections from credit cards could be valuable.")
+        if row0['pct_mobile'] > 0.6:
+            analysis_msgs.append("This customer uses mobile channels frequently — linkable digital rewards could be effective.")
+        if row0['unique_categories'] > 5:
+            analysis_msgs.append("Diverse spending categories — a rewards credit card with broad category coverage could help.")
         if analysis_msgs:
             st.markdown("### 🔎 Analytical AI")
             for m in analysis_msgs:
                 st.write("- " + m)
-        # Use mapping; guarantee we always have a message
+        # Generative tip (map on predicted label)
         gen_tip = SUGGESTIONS.get(pred_label, "Consider a Credit Card for rewards and protection.")
         st.markdown("### 💬 AI Recommendation")
         st.info(gen_tip)
-        with st.expander("Model details & diagnostics"):
-            st.write(f"Model accuracy on holdout (debug): {model_bundle['accuracy']:.3f}")
+        # show customer's raw transactions (first 20) for context
+        st.markdown("### Recent transactions (for context)")
+        tx_rows = featurize_tx(tx_df)
+        cust_tx = tx_rows[tx_rows['Customer ID'].astype(str) == str(cust_choice)].sort_values(by='Transaction Date', ascending=False)
+        if not cust_tx.empty:
+            st.dataframe(cust_tx[['Transaction Date','Category','Item','Total_Spent','Channel','Payment Method']].head(20))
+        # diagnostics
+        with st.expander("Model diagnostics & details"):
+            st.write("Per-customer counts used for training (payment method distribution):")
+            st.write(bundle['payment_counts'])
+            st.write(f"Model accuracy on holdout (debug): {bundle['accuracy']:.3f}")
             try:
                 fi = model.get_feature_importance(type='FeatureImportance')
                 names = model.feature_names_
                 imp = sorted(zip(names, fi), key=lambda x: x[1], reverse=True)
                 st.write("Top features:")
-                for n, v in imp[:10]:
+                for n, v in imp[:20]:
                     st.write(f"- {n}: {v:.3f}")
             except Exception as e:
                 st.write("Feature importance not available:", e)
 
 st.markdown("---")
-st.caption("Built for quick trial. Keep sensitive datasets private — don't push them to public repos.")
+st.caption("Note: This app trains a model on aggregated customer-level features (one row per customer). If your dataset contains only one customer (or very few customers), model training will be limited and results may be unreliable.")
