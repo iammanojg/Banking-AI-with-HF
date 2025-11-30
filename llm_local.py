@@ -1,6 +1,8 @@
-# llm_local.py — PUTER.JS INTEGRATION (Free, No Key LLM)
+# llm_local.py — GROQ + LLAMA 3.1 8B (FAST, FREE, WORKS 100%)
 
+import os
 import streamlit as st
+import requests
 
 # ------------------- STATIC FALLBACKS -------------------
 STATIC_FALLBACK = {
@@ -10,7 +12,7 @@ STATIC_FALLBACK = {
     'Digital Wallet': "Smart move! Link your Digital Wallet to a rewards Credit Card to earn points while keeping convenience."
 }
 
-# ------------------- PROMPT BUILDER -------------------
+# ------------------- PROMPT -------------------
 def _prompt_for_customer(summary: dict) -> str:
     summary_str = ", ".join(f"{k}: {v}" for k, v in summary.items())
     return (
@@ -21,28 +23,33 @@ def _prompt_for_customer(summary: dict) -> str:
         "Recommendation:"
     )
 
-# ------------------- JS CALLBACK FOR LLM (FREE PUTER.JS) -------------------
-def safe_generate_tip(customer_summary: dict, fallback_label: str) -> str:
+# ------------------- GROQ GENERATION (FAST & FREE) -------------------
+def generate_with_groq(customer_summary: dict) -> str:
     prompt = _prompt_for_customer(customer_summary)
-    
-    # Embed JS component for client-side LLM call
-    result_placeholder = st.empty()
-    if st.button("Generate AI Tip"):  # Trigger JS on button click
-        result_placeholder.components.v1.html(
-            f"""
-            <script src="https://js.puter.com/v2/puter.js"></script>
-            <script>
-                puter.ai.chat('{prompt}', 'gpt-5-nano', {{"max_tokens": 150, "temperature": 0.7}}).then(response => {{
-                    // Pass result back to Python via session state or alert for now
-                    window.generatedTip = response;
-                    alert('Tip generated: ' + response);  // Simple alert for testing — replace with callback
-                    window.parent.postMessage({{type: 'tip_generated', tip: response}}, '*');
-                }});
-            </script>
-            """,
-            height=0
-        )
-        # For now, return fallback — upgrade to callback for production
-        return STATIC_FALLBACK.get(fallback_label, "Consider a rewards Credit Card for extra benefits!")
-    else:
-        return STATIC_FALLBACK.get(fallback_label, "Click 'Generate AI Tip' to use free LLM!")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {st.secrets['GROQ_API_KEY']}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": "llama-3.1-8b-instant",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 150,
+        "temperature": 0.7
+    }
+    response = requests.post(url, headers=headers, json=data, timeout=20)
+    if response.status_code == 200:
+        return response.json()["choices"][0]["message"]["content"].strip()
+    return None
+
+# ------------------- SAFE PUBLIC FUNCTION -------------------
+@st.cache_data(show_spinner=False, ttl=60*60)
+def safe_generate_tip(customer_summary: dict, fallback_label: str) -> str:
+    try:
+        tip = generate_with_groq(customer_summary)
+        if tip and len(tip) > 20:
+            return tip
+    except Exception as e:
+        st.warning(f"LLM failed → using fallback ({e})")
+
+    return STATIC_FALLBACK.get(fallback_label, "Consider a rewards Credit Card for extra benefits!")
