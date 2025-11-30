@@ -66,38 +66,54 @@ def load_csv(uploaded_file):
 def featurize_tx(df):
     df = df.copy()
     
-    # Fix column names — handle common variations
-    column_mapping = {
-        'total spent': 'Total_Spent',
-        'Total Spent': 'Total_Spent',
-        'total_spent': 'Total_Spent',
-        'Amount': 'Total_Spent',
-        'amount': 'Total_Spent',
-        'Spent': 'Total_Spent',
-        'spent': 'Total_Spent',
-        'Total Amount': 'Total_Spent',
-        'Transaction Amount': 'Total_Spent'
+    # --- Normalize common column names ---
+    rename_map = {
+        'total spent': 'Total_Spent', 'Total Spent': 'Total_Spent',
+        'total_spent': 'Total_Spent', 'Amount': 'Total_Spent',
+        'amount': 'Total_Spent', 'Spent': 'Total_Spent',
+        'Transaction Amount': 'Total_Spent', 'Total Amount': 'Total_Spent',
+        'payment method': 'Payment Method', 'PaymentMethod': 'Payment Method',
+        'category': 'Category', 'customer id': 'Customer ID',
+        'CustomerID': 'Customer ID', 'customer_id': 'Customer ID'
     }
-    df = df.rename(columns=lambda x: column_mapping.get(x.strip(), x))
+    df.rename(columns=lambda x: rename_map.get(x.strip(), x), inplace=True)
     
-    # Now safely create Total_Spent
+    # --- Ensure required columns exist ---
     if 'Total_Spent' not in df.columns:
-        # Try to find any column that looks like money
-        money_cols = [c for c in df.columns if any(word in c.lower() for word in ['spent', 'amount', 'total', 'price'])]
+        money_cols = [c for c in df.columns if any(k in c.lower() for k in ['spent','amount','total','price'])]
         if money_cols:
             df['Total_Spent'] = pd.to_numeric(df[money_cols[0]], errors='coerce').fillna(0)
         else:
             df['Total_Spent'] = 0.0
-    else:
-        df['Total_Spent'] = pd.to_numeric(df['Total_Spent'], errors='coerce').fillna(0)
     
-    # Date
-    if 'Transaction Date' in df.columns:
-        df['Transaction Date'] = pd.to_datetime(df['Transaction Date'], errors='coerce')
-    elif 'Date' in df.columns:
-        df['Transaction Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    if 'Payment Method' not in df.columns:
+        df['Payment Method'] = 'Unknown'
+    if 'Category' not in df.columns:
+        df['Category'] = 'Unknown'
+    if 'Customer ID' not in df.columns:
+        df['Customer ID'] = 'Unknown'
+    
+    df['Total_Spent'] = pd.to_numeric(df['Total_Spent'], errors='coerce').fillna(0)
     
     return df
+    
+def build_customer_features(tx_df):
+    tx = featurize_tx(tx_df)
+    rows = []
+    for cust, group in tx.groupby("Customer ID", dropna=False):
+        if pd.isna(cust) or str(cust).strip() == "":
+            continue
+        total_spent = group["Total_Spent"].sum()
+        avg_spent = group["Total_Spent"].mean() if len(group) > 0 else 0.0
+        rows.append({
+            "Customer ID": cust,
+            "total_tx": len(group),
+            "total_spent": float(total_spent),
+            "avg_spent": float(avg_spent),
+            "top_category": group["Category"].mode().iloc[0] if not group["Category"].empty else "Unknown",
+            "primary_payment": group["Payment Method"].mode().iloc[0] if not group["Payment Method"].empty else "Unknown",
+        })
+    return pd.DataFrame(rows)
 # ==================== 5. TRAIN MODEL ====================
 @st.cache_resource(show_spinner="Training model...")
 def train_model(tx_df):
