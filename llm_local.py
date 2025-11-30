@@ -1,8 +1,9 @@
-# llm_local.py — ULTIMATE FINAL VERSION (No Invalid Params + Legacy Endpoint)
+# llm_local.py — FREE MLVOCA API (No HF Drama, Instant Text Gen)
 
 import os
 import streamlit as st
-from huggingface_hub import InferenceClient
+import requests
+import json
 
 # ------------------- STATIC FALLBACKS -------------------
 STATIC_FALLBACK = {
@@ -12,51 +13,49 @@ STATIC_FALLBACK = {
     'Digital Wallet': "Smart move! Link your Digital Wallet to a rewards Credit Card to earn points while keeping convenience."
 }
 
-# ------------------- READ TOKEN CORRECTLY -------------------
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-HF_MODEL = os.getenv("HF_MODEL", "openai-community/gpt2")
-
 # ------------------- PROMPT -------------------
 def _prompt_for_customer(summary: dict) -> str:
     summary_str = ", ".join(f"{k}: {v}" for k, v in summary.items())
-    prompt = (
+    return (
         "You are a friendly, concise financial advisor. Write a short, natural recommendation (40–100 words) "
         "encouraging this customer to consider a rewards Credit Card. Highlight 1–2 benefits based on their behavior. "
         "End with a clear call-to-action. Never mention personal data.\n\n"
         f"Customer behavior: {summary_str}\n\n"
         "Recommendation:"
     )
-    return prompt
 
-# ------------------- HF TEXT GENERATION CALL (REMOVED INVALID max_length) -------------------
-def generate_with_hf_inference(customer_summary: dict, max_tokens: int = 150, temperature: float = 0.7) -> str:
-    if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN not set in environment.")
-
-    # Legacy base_url for stable text gen (avoids router bugs)
-    client = InferenceClient(token=HF_TOKEN, base_url="https://api-inference.huggingface.co")
+# ------------------- MLVOCA GENERATION CALL (FREE, NO KEY) -------------------
+def generate_with_llm(customer_summary: dict, max_tokens: int = 150) -> str:
     prompt = _prompt_for_customer(customer_summary)
+    payload = {
+        "model": "tinyllama",  # Fast, free model (or "deepseek-r1:1.5b" for better quality)
+        "prompt": prompt,
+        "stream": False  # Single response, no streaming
+    }
 
-    result = client.text_generation(
-        prompt,
-        model=HF_MODEL,
-        max_new_tokens=max_tokens,  # Valid param
-        temperature=temperature,    # Valid param
-        do_sample=True,             # Valid param
-        return_full_text=False      # Valid param — no invalid ones!
-    )
-
-    return result.strip()
+    try:
+        response = requests.post(
+            "https://mlvoca.com/api/generate",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=30
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("response", "").strip()
+        else:
+            raise RuntimeError(f"API error {response.status_code}: {response.text}")
+    except Exception as e:
+        raise RuntimeError(f"Generation failed: {e}")
 
 # ------------------- SAFE PUBLIC FUNCTION -------------------
 @st.cache_data(show_spinner=False, ttl=60*60)
 def safe_generate_tip(customer_summary: dict, fallback_label: str) -> str:
-    if HF_TOKEN:
-        try:
-            generated = generate_with_hf_inference(customer_summary)
-            if generated and len(generated) > 15:
-                return generated
-        except Exception as e:
-            st.warning(f"Hugging Face generation failed → using fallback ({e})")
+    try:
+        generated = generate_with_llm(customer_summary)
+        if generated and len(generated) > 15:
+            return generated
+    except Exception as e:
+        st.warning(f"LLM generation failed → using fallback ({e})")
 
     return STATIC_FALLBACK.get(fallback_label, "Consider a rewards Credit Card for extra benefits!")
