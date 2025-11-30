@@ -2,31 +2,6 @@
 
 import streamlit as st
 import os
-
-# ==================== CRITICAL: LOAD SECRETS FIRST ====================
-# This MUST be the very first thing after importing streamlit
-# (Streamlit loads secrets only when st.secrets is accessed)
-try:
-    # This line forces Streamlit Cloud to load .streamlit/secrets.toml
-    os.environ["HF_TOKEN"] = st.secrets["HF_TOKEN"]
-    os.environ["HUGGINGFACEHUB_API_TOKEN"] = st.secrets["HF_TOKEN"]
-except Exception as e:
-    st.error(
-        "HF_TOKEN is missing or secrets.toml not loaded!\n\n"
-        "1. Make sure the file exists exactly at:\n"
-        "   https://github.com/iammanojg/Banking-AI-with-HF/blob/main/.streamlit/secrets.toml\n\n"
-        "2. Content must be exactly:\n"
-        "```toml\n"
-        "HF_TOKEN = \"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\"\n"
-        "HF_MODEL = \"HuggingFaceH4/zephyr-7b-beta\"\n"
-        "```"
-    )
-    st.stop()
-
-# Optional: show success (remove later if you want)
-# st.success("Hugging Face token loaded successfully!")
-
-# NOW safe to import everything else
 from dotenv import load_dotenv
 load_dotenv()  # only helps locally
 from llm_local import safe_generate_tip
