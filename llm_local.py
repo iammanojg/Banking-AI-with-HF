@@ -1,4 +1,4 @@
-# llm_local.py — FINAL FIXED VERSION (Gemma + Provider)
+# llm_local.py — FINAL BULLETPROOF VERSION (No More Errors!)
 
 import os
 import streamlit as st
@@ -14,7 +14,7 @@ STATIC_FALLBACK = {
 
 # ------------------- READ TOKEN CORRECTLY -------------------
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-HF_MODEL = os.getenv("HF_MODEL", "google/gemma-2-2b-it")
+HF_MODEL = os.getenv("HF_MODEL", "gpt2")
 
 # ------------------- PROMPT -------------------
 def _prompt_for_customer(summary: dict) -> str:
@@ -28,11 +28,12 @@ def _prompt_for_customer(summary: dict) -> str:
     )
     return prompt
 
-# ------------------- HF INFERENCE CALL (FIXED WITH PROVIDER) -------------------
+# ------------------- HF INFERENCE CALL (FIXED: Provider in Client Only) -------------------
 def generate_with_hf_inference(customer_summary: dict, max_tokens: int = 150, temperature: float = 0.7) -> str:
     if not HF_TOKEN:
         raise RuntimeError("HF_TOKEN not set in environment.")
 
+    # FIXED: Provider goes HERE in client constructor (not in text_generation)
     client = InferenceClient(token=HF_TOKEN, provider="hf-inference")
     prompt = _prompt_for_customer(customer_summary)
 
@@ -42,8 +43,8 @@ def generate_with_hf_inference(customer_summary: dict, max_tokens: int = 150, te
         max_new_tokens=max_tokens,
         temperature=temperature,
         do_sample=True,
-        return_full_text=False,
-        provider="hf-inference"
+        return_full_text=False
+        # ← No 'provider' here — that's the error!
     )
 
     return result.strip()
