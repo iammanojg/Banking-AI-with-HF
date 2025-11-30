@@ -115,17 +115,44 @@ def build_customer_features(tx_df):
         })
     return pd.DataFrame(rows)
 # ==================== 5. TRAIN MODEL ====================
-@st.cache_resource(show_spinner="Training model...")
+@st.cache_resource(show_spinner="Training customer model...")
 def train_model(tx_df):
     cust_df = build_customer_features(tx_df)
+    
     if len(cust_df) < 2:
-        st.error("Need at least 2 customers to train.")
+        st.error("Need at least 2 customers to train the model.")
         st.stop()
-    X = cust_df.drop(columns=["Customer ID", "primary_payment"])
+
+    # --- FINAL FIX: Force all numeric columns to be clean numbers ---
+    feature_df = cust_df.drop(columns=["Customer ID", "primary_payment", "top_category"], errors="ignore")
+    
+    # Convert everything to numeric, replace bad values with 0
+    for col in feature_df.columns:
+        feature_df[col] = pd.to_numeric(feature_df[col], errors='coerce').fillna(0)
+
+    # Add back categorical feature safely
+    feature_df["top_category"] = cust_df["top_category"].fillna("Unknown").astype(str)
+
+    X = feature_df
     y = cust_df["primary_payment"]
-    model = CatBoostClassifier(iterations=300, depth=5, verbose=False, random_seed=42)
+
+    # Train CatBoost with proper categorical feature
+    model = CatBoostClassifier(
+        iterations=300,
+        depth=6,
+        learning_rate=0.05,
+        random_seed=42,
+        verbose=False,
+        cat_features=["top_category"]  # ← this tells CatBoost it's categorical
+    )
+    
     model.fit(X, y)
-    return {"model": model, "features": X.columns.tolist(), "cust_df": cust_df}
+
+    return {
+        "model": model,
+        "features": X.columns.tolist(),
+        "cust_df": cust_df
+    }
 
 # ==================== 6. UI ====================
 uploaded = st.sidebar.file_uploader("Upload CSV (optional)", type=["csv", "txt"])
