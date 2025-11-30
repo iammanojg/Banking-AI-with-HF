@@ -1,9 +1,6 @@
-# llm_local.py — FREE MLVOCA API (No HF Drama, Instant Text Gen)
+# llm_local.py — PUTER.JS INTEGRATION (Free, No Key LLM)
 
-import os
 import streamlit as st
-import requests
-import json
 
 # ------------------- STATIC FALLBACKS -------------------
 STATIC_FALLBACK = {
@@ -13,7 +10,7 @@ STATIC_FALLBACK = {
     'Digital Wallet': "Smart move! Link your Digital Wallet to a rewards Credit Card to earn points while keeping convenience."
 }
 
-# ------------------- PROMPT -------------------
+# ------------------- PROMPT BUILDER -------------------
 def _prompt_for_customer(summary: dict) -> str:
     summary_str = ", ".join(f"{k}: {v}" for k, v in summary.items())
     return (
@@ -24,38 +21,28 @@ def _prompt_for_customer(summary: dict) -> str:
         "Recommendation:"
     )
 
-# ------------------- MLVOCA GENERATION CALL (FREE, NO KEY) -------------------
-def generate_with_llm(customer_summary: dict, max_tokens: int = 150) -> str:
-    prompt = _prompt_for_customer(customer_summary)
-    payload = {
-        "model": "tinyllama",  # Fast, free model (or "deepseek-r1:1.5b" for better quality)
-        "prompt": prompt,
-        "stream": False  # Single response, no streaming
-    }
-
-    try:
-        response = requests.post(
-            "https://mlvoca.com/api/generate",
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=30
-        )
-        if response.status_code == 200:
-            data = response.json()
-            return data.get("response", "").strip()
-        else:
-            raise RuntimeError(f"API error {response.status_code}: {response.text}")
-    except Exception as e:
-        raise RuntimeError(f"Generation failed: {e}")
-
-# ------------------- SAFE PUBLIC FUNCTION -------------------
-@st.cache_data(show_spinner=False, ttl=60*60)
+# ------------------- JS CALLBACK FOR LLM (FREE PUTER.JS) -------------------
 def safe_generate_tip(customer_summary: dict, fallback_label: str) -> str:
-    try:
-        generated = generate_with_llm(customer_summary)
-        if generated and len(generated) > 15:
-            return generated
-    except Exception as e:
-        st.warning(f"LLM generation failed → using fallback ({e})")
-
-    return STATIC_FALLBACK.get(fallback_label, "Consider a rewards Credit Card for extra benefits!")
+    prompt = _prompt_for_customer(customer_summary)
+    
+    # Embed JS component for client-side LLM call
+    result_placeholder = st.empty()
+    if st.button("Generate AI Tip"):  # Trigger JS on button click
+        result_placeholder.components.v1.html(
+            f"""
+            <script src="https://js.puter.com/v2/puter.js"></script>
+            <script>
+                puter.ai.chat('{prompt}', 'gpt-5-nano', {{"max_tokens": 150, "temperature": 0.7}}).then(response => {{
+                    // Pass result back to Python via session state or alert for now
+                    window.generatedTip = response;
+                    alert('Tip generated: ' + response);  // Simple alert for testing — replace with callback
+                    window.parent.postMessage({{type: 'tip_generated', tip: response}}, '*');
+                }});
+            </script>
+            """,
+            height=0
+        )
+        # For now, return fallback — upgrade to callback for production
+        return STATIC_FALLBACK.get(fallback_label, "Consider a rewards Credit Card for extra benefits!")
+    else:
+        return STATIC_FALLBACK.get(fallback_label, "Click 'Generate AI Tip' to use free LLM!")
