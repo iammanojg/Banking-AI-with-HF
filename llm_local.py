@@ -1,9 +1,8 @@
-# llm_local.py — FIXED WITH InferenceClient (Official HF 2025 Method)
+# llm_local.py — FINAL FIXED VERSION (Gemma + Provider)
 
 import os
 import streamlit as st
-import requests
-from huggingface_hub import InferenceClient  # ← NEW: Official client
+from huggingface_hub import InferenceClient
 
 # ------------------- STATIC FALLBACKS -------------------
 STATIC_FALLBACK = {
@@ -15,7 +14,7 @@ STATIC_FALLBACK = {
 
 # ------------------- READ TOKEN CORRECTLY -------------------
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-HF_MODEL = os.getenv("HF_MODEL", "HuggingFaceH4/zephyr-7b-beta")
+HF_MODEL = os.getenv("HF_MODEL", "google/gemma-2-2b-it")
 
 # ------------------- PROMPT -------------------
 def _prompt_for_customer(summary: dict) -> str:
@@ -29,12 +28,12 @@ def _prompt_for_customer(summary: dict) -> str:
     )
     return prompt
 
-# ------------------- HF INFERENCE CALL (NEW OFFICIAL METHOD) -------------------
+# ------------------- HF INFERENCE CALL (FIXED WITH PROVIDER) -------------------
 def generate_with_hf_inference(customer_summary: dict, max_tokens: int = 150, temperature: float = 0.7) -> str:
     if not HF_TOKEN:
         raise RuntimeError("HF_TOKEN not set in environment.")
 
-    client = InferenceClient(token=HF_TOKEN)  # Handles routing automatically
+    client = InferenceClient(token=HF_TOKEN, provider="hf-inference")
     prompt = _prompt_for_customer(customer_summary)
 
     result = client.text_generation(
@@ -43,15 +42,15 @@ def generate_with_hf_inference(customer_summary: dict, max_tokens: int = 150, te
         max_new_tokens=max_tokens,
         temperature=temperature,
         do_sample=True,
-        return_full_text=False
+        return_full_text=False,
+        provider="hf-inference"
     )
 
     return result.strip()
 
 # ------------------- SAFE PUBLIC FUNCTION -------------------
-@st.cache_data(show_spinner=False, ttl=60*60)  # cache 1 hour
+@st.cache_data(show_spinner=False, ttl=60*60)
 def safe_generate_tip(customer_summary: dict, fallback_label: str) -> str:
-    # Try real Hugging Face generation
     if HF_TOKEN:
         try:
             generated = generate_with_hf_inference(customer_summary)
@@ -60,5 +59,4 @@ def safe_generate_tip(customer_summary: dict, fallback_label: str) -> str:
         except Exception as e:
             st.warning(f"Hugging Face generation failed → using fallback ({e})")
 
-    # Fallback to static message
     return STATIC_FALLBACK.get(fallback_label, "Consider a rewards Credit Card for extra benefits!")
