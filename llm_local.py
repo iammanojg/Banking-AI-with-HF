@@ -1,8 +1,8 @@
-# llm_local.py — ULTIMATE FINAL VERSION (Raw Text Gen + Correct Model)
+# llm_local.py — FINAL, FORUM-PROVEN VERSION (LangChain HuggingFaceEndpoint)
 
 import os
 import streamlit as st
-from huggingface_hub import InferenceClient
+from langchain_huggingface import HuggingFaceEndpoint  # ← NEW: Stable wrapper for HF API
 
 # ------------------- STATIC FALLBACKS -------------------
 STATIC_FALLBACK = {
@@ -14,37 +14,36 @@ STATIC_FALLBACK = {
 
 # ------------------- READ TOKEN CORRECTLY -------------------
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-HF_MODEL = os.getenv("HF_MODEL", "openai-community/gpt2")
+HF_MODEL = os.getenv("HF_MODEL", "gpt2")
 
 # ------------------- PROMPT -------------------
 def _prompt_for_customer(summary: dict) -> str:
     summary_str = ", ".join(f"{k}: {v}" for k, v in summary.items())
-    prompt = (
+    return (
         "You are a friendly, concise financial advisor. Write a short, natural recommendation (40–100 words) "
         "encouraging this customer to consider a rewards Credit Card. Highlight 1–2 benefits based on their behavior. "
         "End with a clear call-to-action. Never mention personal data.\n\n"
         f"Customer behavior: {summary_str}\n\n"
         "Recommendation:"
     )
-    return prompt
 
-# ------------------- HF TEXT GENERATION CALL (BACK TO RAW + BASE_URL) -------------------
+# ------------------- HF TEXT GENERATION CALL (LANGCHAIN ENDPOINT — FIXED FOR 2025) -------------------
 def generate_with_hf_inference(customer_summary: dict, max_tokens: int = 150, temperature: float = 0.7) -> str:
     if not HF_TOKEN:
         raise RuntimeError("HF_TOKEN not set in environment.")
 
-    # FIXED: Use base_url for legacy text-gen endpoint (avoids router issues)
-    client = InferenceClient(token=HF_TOKEN, base_url="https://api-inference.huggingface.co")
-    prompt = _prompt_for_customer(customer_summary)
-
-    result = client.text_generation(
-        prompt,
-        model=HF_MODEL,
-        max_new_tokens=max_tokens,
+    # FIXED: LangChain's HuggingFaceEndpoint handles deprecated endpoints & routing automatically
+    llm = HuggingFaceEndpoint(
+        repo_id=HF_MODEL,
+        huggingfacehub_api_token=HF_TOKEN,
         temperature=temperature,
-        do_sample=True,
-        return_full_text=False
+        max_new_tokens=max_tokens,
+        max_length=512,  # Prevents truncation
+        do_sample=True
     )
+
+    prompt = _prompt_for_customer(customer_summary)
+    result = llm.invoke(prompt)
 
     return result.strip()
 
